@@ -1,0 +1,179 @@
+# Get the current non-root user
+CURRENT_USER=$(who | awk 'NR==1{print $1}')
+CONFIG_DIR="/etc/docker-biglinux/nextcloud-plus"
+
+update_ip() {
+    echo "Retrieving IP addresses from available interfaces..."
+    interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|enp|wlp|wlo)')
+
+    for iface in $interfaces; do
+        # We get the first valid IP found
+        ip=$(ip -4 addr show "$iface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+        if [[ -n "$ip" ]]; then
+            echo "Interface: $iface, IP: $ip"
+            echo "Updating configuration files with IP: $ip..."
+            sed -i "s/GET_IP/$ip/g" $CONFIG_DIR/*
+            sed -i "s/GET_IP/$ip/g" /usr/share/applications/docker-nextcloud-plus.desktop
+            echo "$ip"
+            return "$ip"
+        fi
+    done
+    echo "No valid IP found." >&2
+    exit 1
+}
+
+
+# Executed after package installation
+post_install() {
+    echo "INSTALL LOCAL"
+    # Update IP in configuration files and store the IP in a variable
+    ip=$(update_ip)
+
+    # Check if the Docker/Nextcloud-Plus folder exists, otherwise create it
+    if [ ! -d /home/$CURRENT_USER/Docker/Nextcloud-Plus ]; then
+        echo "Creating Docker/Nextcloud-Plus folder..."
+        mkdir -p /home/$CURRENT_USER/Docker/Nextcloud-Plus
+    fi
+
+    # Check if Docker is installed
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "The Docker package is not installed. Please install it before continuing."
+        exit 1
+    fi
+    #Creating necessary networks
+    docker network create nextcloud-net > /dev/null
+    docker network create collabora-net > /dev/null
+
+     # Configuration directory path
+     local config_dir_collabora="/home/$CURRENT_USER/Docker/Nextcloud-Plus/Collabora/config"
+ 
+     # Create the configuration directory if it does not exist
+     if [ ! -d "$config_dir_collabora" ]; then
+         echo "Creating Collabora config directory..."
+         mkdir -p "$config_dir_collabora"
+     fi
+ 
+     # Coolwsd.xml file path in the configuration directory
+     local config_coolwsd_xml="$config_dir_collabora/coolwsd.xml"
+
+     # Copy the coolwsd.xml file if it does not exist
+     if [ ! -f "$config_coolwsd_xml" ]; then
+         echo "Copying coolwsd.xml to Collabora config directory..."
+         cp -f $CONFIG_DIR/coolwsd.xml "$config_coolwsd_xml"
+     else
+         echo "coolwsd.xml already exists in the Collabora config directory."
+     fi
+    
+     # Configuration directory path
+     local config_dir_nginx="/home/$CURRENT_USER/Docker/Nextcloud-Plus/Nginx/config"
+ 
+     # Create the configuration directory if it does not exist
+     if [ ! -d "$config_dir_nginx" ]; then
+         echo "Creating Collabora config directory..."
+         mkdir -p "$config_dir_nginx"
+     fi
+
+     # nginx.conf file path in the configuration directory
+     local config_nginx="$config_dir_nginx/nginx.conf"
+
+     # Copy the nginx.conf file if it does not exist
+     if [ ! -f "$config_nginx" ]; then
+         echo "Copying nginx.conf to Nginx config directory..."
+         cp -f "$CONFIG_DIR/nginx.conf" "$config_nginx"
+     else
+         echo "nginx.conf already exists in the Nginx config directory."
+     fi
+
+    # Start the Nextcloud-Plus container using 'docker compose'
+    echo "Starting the Nextcloud-Plus container..."
+    eval "HOME=/home/$CURRENT_USER docker compose -f $CONFIG_DIR/nextcloud.yml -f $CONFIG_DIR/collabora.yml -f $CONFIG_DIR/collabora-nginx.yml up -d"
+    
+    # Symlink nextcloud.yml to Docker/Nextcloud-Plus folder
+    echo "Creating symlink to nextcloud.yml..."
+    ln -sf $CONFIG_DIR/nextcloud.yml /home/$CURRENT_USER/Docker/Nextcloud-Plus/nextcloud.yml
+
+    # Symlink collabora.yml to Docker/Nextcloud-Plus folder
+    echo "Creating symlink to collabora.yml..."
+    ln -sf $CONFIG_DIR/collabora.yml /home/$CURRENT_USER/Docker/Nextcloud-Plus/collabora.yml
+
+    # Symlink collabora-nginx.yml to Docker/Nextcloud-Plus folder
+    echo "Creating symlink to collabora-nginx.yml..."
+    ln -sf $CONFIG_DIR/collabora-nginx.yml /home/$CURRENT_USER/Docker/Nextcloud-Plus/collabora-nginx.yml
+
+
+    # Ensure the Nextcloud container is ready
+    echo "Waiting for Nextcloud to initialize..."
+    until docker exec -u 33 nextcloud php occ status 2>/dev/null | grep -q 'installed: true'; do
+        sleep 5
+    done
+
+    # Install and enable the Collabora Online app
+    echo "Installing and enabling the Collabora Online app..."
+    docker exec -u www-data nextcloud php occ app:install richdocuments
+    docker exec -u www-data nextcloud php occ app:enable richdocuments
+
+    # Configure Collabora Online server URL with the container IP
+    #echo "Configuring Collabora Online server URL for IP $ip ..."
+    #docker exec -u www-data nextcloud php occ config:app:set richdocuments wopi_url --value="http://$ip:9980"
+    #docker exec -u www-data nextcloud sh -c "php occ config:app:set richdocuments wopi_url --value='http://$ip:9980'"
+
+    # Configure Allow list for WOPI requests
+    echo "Configuring Allow list for WOPI requests..."
+    docker exec -u www-data nextcloud php occ config:app:set richdocuments wopi_allowlist --value="0.0.0.0/0"
+
+    # Enable and start the nextcloudcron.timer service
+    echo "Enabling and starting nextcloudcron.timer service..."
+    systemctl enable nextcloudcron.timer
+    systemctl start nextcloudcron.timer
+    
+    # Set the correct owner and group for the Docker folder and its contents
+    echo "Setting correct permissions for Docker folder..." && sleep 1
+    chown -R http:$CURRENT_USER /home/$CURRENT_USER/Docker/Nextcloud-Plus/nextcloud
+    find /home/$CURRENT_USER/Docker/Nextcloud-Plus/nextcloud/ -type d -exec chmod 775 {} \;
+    find /home/$CURRENT_USER/Docker/Nextcloud-Plus/nextcloud/ -type f -exec chmod 664 {} \;
+}
+
+# Upgrade package
+post_upgrade() {
+    post_install
+}
+
+# Executed before package removal
+pre_remove() {
+    # Stop and remove the Nextcloud-Plus container
+    echo "Stopping and removing the Nextcloud-Plus container..."
+    docker compose -f $CONFIG_DIR/nextcloud.yml -f $CONFIG_DIR/collabora.yml -f $CONFIG_DIR/collabora-nginx.yml down
+    
+    # Remove symlink to nextcloud.yml in Docker/Nextcloud-Plus folder
+    echo "Removing symbolic link to nextcloud.yml..."
+    rm -f /home/$CURRENT_USER/Docker/Nextcloud-Plus/nextcloud.yml
+    
+    # Remove symlink to collabora.yml in Docker/Nextcloud-Plus folder
+    echo "Removing symbolic link to collabora.yml..."
+    rm -f /home/$CURRENT_USER/Docker/Nextcloud-Plus/collabora.yml
+
+    # Remove symlink to collabora.yml in Docker/Nextcloud-Plus folder
+    echo "Removing symbolic link to collabora-nginx.yml..."
+    rm -f /home/$CURRENT_USER/Docker/Nextcloud-Plus/collabora-nginx.yml
+
+    # Stop and disable the nextcloudcron.timer service
+    echo "Stopping and disabling nextcloudcron.timer service..."
+    systemctl stop nextcloudcron.timer
+    systemctl disable nextcloudcron.timer
+}
+
+# Executed after package removal
+post_remove() {
+    # Remove the Docker image
+    echo "Removing the Nextcloud-Plus Docker image..."
+    docker rmi postgres:17-alpine
+    docker rmi postgres:latest
+    docker rmi nextcloud:stable
+    docker rmi redis:alpine
+    docker rmi collabora/code:latest
+    docker rmi nginx:alpine
+
+    # Removing networks ..
+    docker network rm -f nextcloud-net > /dev/null
+    docker network rm -f collabora-net > /dev/null
+} 
