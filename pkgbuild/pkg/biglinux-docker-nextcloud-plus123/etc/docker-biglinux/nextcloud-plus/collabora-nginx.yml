@@ -1,0 +1,19 @@
+services:
+  nginx_proxy:
+    #image: nginx:latest
+    image: nginx:alpine
+    container_name: nginx_proxy
+    restart: always
+    volumes:
+      - ${HOME}/Docker/Nextcloud-Plus/Nginx/config/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "5731:80"
+    networks:
+      - collabora-net
+      - nextcloud-net
+
+networks:
+  collabora-net:
+    external: true
+  nextcloud-net:
+    external: true
