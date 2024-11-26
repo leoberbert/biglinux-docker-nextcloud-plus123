@@ -9,9 +9,10 @@ pkgver=$(date +%y.%m.%d)
 pkgrel=$(date +%H%M)
 arch=('any')
 license=('GPL3')
-url="https://github.com/biglinux/$pkgname"
+url="https://github.com/leoberbert/$pkgname"
 provides=("$pkgname")
 source=("git+${url}.git")
+#source=("git+ssh://git@github.com:biglinux/$pkgname.git")
 md5sums=('SKIP')
 if [ -e "${pkgname}.install" ];then
     install=${pkgname}.install
