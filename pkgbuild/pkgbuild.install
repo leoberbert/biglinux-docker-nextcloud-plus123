@@ -22,7 +22,6 @@ update_ip() {
 post_install() {
     # Update IP in configuration files and store the IP in a variable
     ip=$(update_ip)
-    echo $ip
 
     # Check if the Docker/Nextcloud-Plus folder exists, otherwise create it
     if [ ! -d /home/$CURRENT_USER/Docker/Nextcloud-Plus ]; then
