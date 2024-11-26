@@ -3,30 +3,26 @@ CURRENT_USER=$(who | awk 'NR==1{print $1}')
 CONFIG_DIR="/etc/docker-biglinux/nextcloud-plus"
 
 update_ip() {
-    echo "Retrieving IP addresses from available interfaces..."
-    interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|enp|wlp|wlo)')
+    interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|enp|wlp)')
 
     for iface in $interfaces; do
-        # We get the first valid IP found
         ip=$(ip -4 addr show "$iface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
         if [[ -n "$ip" ]]; then
-            echo "Interface: $iface, IP: $ip"
-            echo "Updating configuration files with IP: $ip..."
+            echo "$ip"
             sed -i "s/GET_IP/$ip/g" $CONFIG_DIR/*
             sed -i "s/GET_IP/$ip/g" /usr/share/applications/docker-nextcloud-plus.desktop
-            echo "$ip"
+            return 0
         fi
     done
     echo "No valid IP found." >&2
     exit 1
 }
 
-
 # Executed after package installation
 post_install() {
-    echo "INSTALL LOCAL"
     # Update IP in configuration files and store the IP in a variable
     ip=$(update_ip)
+    echo $ip
 
     # Check if the Docker/Nextcloud-Plus folder exists, otherwise create it
     if [ ! -d /home/$CURRENT_USER/Docker/Nextcloud-Plus ]; then
@@ -114,6 +110,7 @@ post_install() {
     # Configure Collabora Online server URL with the container IP
     #echo "Configuring Collabora Online server URL for IP $ip ..."
     #docker exec -u www-data nextcloud php occ config:app:set richdocuments wopi_url --value="http://$ip:9980"
+    echo "O problema era aqui --> $ip"
     docker exec -u www-data nextcloud php occ config:app:set richdocuments wopi_url --value="http://192.168.2.72:9980"
 
     # Configure Allow list for WOPI requests
